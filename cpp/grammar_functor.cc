@@ -20,6 +20,7 @@
 #include "grammar_impl.h"
 #include "support/encoding.h"
 #include "support/logging.h"
+#include "support/memory_size.h"
 #include "xgrammar/grammar.h"
 
 namespace xgrammar {
@@ -2098,8 +2099,9 @@ bool CrossingCacheManager::CrossingCacheManagerImpl::AddCache(
     const AdaptiveTokenMask& token_mask
 ) {
   std::lock_guard<std::mutex> lock(mutex_);
-  if (cache_.find(std::make_tuple(fsm_hash, fsm_new_node_id, tokenizer_hash)) != cache_.end()) {
-    // The cache already exists.
+  if (cache_.find(std::make_tuple(fsm_hash, fsm_new_node_id, tokenizer_hash)) != cache_.end() ||
+      MemorySize(token_mask) > max_cache_memory_size_) {
+    // The cache already exists or the token mask is too large.
     return false;
   }
   // Add the new cache.
@@ -2107,11 +2109,13 @@ bool CrossingCacheManager::CrossingCacheManagerImpl::AddCache(
       std::make_pair(std::make_tuple(fsm_hash, fsm_new_node_id, tokenizer_hash), token_mask)
   );
   cache_[std::make_tuple(fsm_hash, fsm_new_node_id, tokenizer_hash)] = cache_list_.begin();
+  current_cache_memory_size_ += MemorySize(token_mask);
 
   // If the cache exceeds the maximum size, evict the least recently used item.
-  if (cache_.size() > max_cache_size_) {
+  while (current_cache_memory_size_ > static_cast<int64_t>(max_cache_memory_size_)) {
     auto last_cache_list_iterator = cache_list_.end();
     last_cache_list_iterator--;
+    current_cache_memory_size_ -= MemorySize(last_cache_list_iterator->second);
     cache_.erase(last_cache_list_iterator->first);
     cache_list_.pop_back();
   }
@@ -2125,8 +2129,9 @@ bool CrossingCacheManager::CrossingCacheManagerImpl::AddCache(
     AdaptiveTokenMask&& token_mask
 ) {
   std::lock_guard<std::mutex> lock(mutex_);
-  if (cache_.find(std::make_tuple(fsm_hash, fsm_new_node_id, tokenizer_hash)) != cache_.end()) {
-    // The cache already exists.
+  if (cache_.find(std::make_tuple(fsm_hash, fsm_new_node_id, tokenizer_hash)) != cache_.end() ||
+      MemorySize(token_mask) > max_cache_memory_size_) {
+    // The cache already exists or the token mask is too large.
     return false;
   }
   // Add the new cache.
@@ -2134,11 +2139,13 @@ bool CrossingCacheManager::CrossingCacheManagerImpl::AddCache(
       std::make_tuple(fsm_hash, fsm_new_node_id, tokenizer_hash), std::move(token_mask)
   ));
   cache_[std::make_tuple(fsm_hash, fsm_new_node_id, tokenizer_hash)] = cache_list_.begin();
+  current_cache_memory_size_ += MemorySize(cache_list_.front().second);
 
   // If the cache exceeds the maximum size, evict the least recently used item.
-  if (cache_.size() > max_cache_size_) {
+  while (current_cache_memory_size_ > static_cast<int64_t>(max_cache_memory_size_)) {
     auto last_cache_list_iterator = cache_list_.end();
     last_cache_list_iterator--;
+    current_cache_memory_size_ -= MemorySize(last_cache_list_iterator->second);
     cache_.erase(last_cache_list_iterator->first);
     cache_list_.pop_back();
   }
