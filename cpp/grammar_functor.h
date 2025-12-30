@@ -9,8 +9,11 @@
 
 #include <xgrammar/xgrammar.h>
 
+#include <list>
+#include <mutex>
 #include <string>
 
+#include "compiled_grammar_impl.h"
 #include "grammar_builder.h"
 #include "grammar_impl.h"
 #include "xgrammar/grammar.h"
@@ -385,6 +388,67 @@ class GrammarOptimizer {
 class GrammarFSMHasher {
  public:
   static void Apply(Grammar* grammar);
+};
+
+/*!
+ * \brief Store the crossing cache for different grammars.
+ * \param max_cache_size The maximum size of the cache numbers.
+ * \details LRU algorithm is implemented.
+ */
+class CrossingCacheManager {
+ public:
+  std::optional<AdaptiveTokenMask> GetCache(
+      const uint64_t& fsm_hash, int32_t fsm_new_node_id, const uint64_t& tokenizer_hash
+  );
+  bool AddCache(
+      const uint64_t& fsm_hash,
+      int32_t fsm_new_node_id,
+      const uint64_t& tokenizer_hash,
+      const AdaptiveTokenMask& token_mask
+  );
+  bool AddCache(
+      const uint64_t& fsm_hash,
+      int32_t fsm_new_node_id,
+      const uint64_t& tokenizer_hash,
+      AdaptiveTokenMask&& token_mask
+  );
+  CrossingCacheManager(size_t max_cache_size = 10000)
+      : crossing_cache_manager_impl_(max_cache_size) {
+    XGRAMMAR_CHECK(max_cache_size != 0);
+  }
+
+  void ClearCache() { crossing_cache_manager_impl_.ClearCache(); }
+
+ private:
+  class CrossingCacheManagerImpl {
+   public:
+    std::optional<AdaptiveTokenMask> GetCache(
+        const uint64_t& fsm_hash, int32_t fsm_new_node_id, const uint64_t& tokenizer_hash
+    );
+    bool AddCache(
+        const uint64_t& fsm_hash,
+        int32_t fsm_new_node_id,
+        const uint64_t& tokenizer_hash,
+        const AdaptiveTokenMask& token_mask
+    );
+    bool AddCache(
+        const uint64_t& fsm_hash,
+        int32_t fsm_new_node_id,
+        const uint64_t& tokenizer_hash,
+        AdaptiveTokenMask&& token_mask
+    );
+    CrossingCacheManagerImpl(size_t max_cache_size = 10000) : max_cache_size_(max_cache_size) {}
+
+    void ClearCache();
+
+   private:
+    std::mutex mutex_;
+    const size_t max_cache_size_;
+    std::list<std::pair<std::tuple<uint64_t, int32_t, uint64_t>, AdaptiveTokenMask>> cache_list_;
+    std::unordered_map<std::tuple<uint64_t, int32_t, uint64_t>, decltype(cache_list_.begin())>
+        cache_;
+  };
+  CrossingCacheManagerImpl crossing_cache_manager_impl_;
 };
 
 }  // namespace xgrammar

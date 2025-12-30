@@ -2046,6 +2046,111 @@ uint64_t GrammarFSMHasherImpl::HashFsm(int fsm_index) {
   return hash_result;
 }
 
+class CrossingCacheManagerImpl {
+ public:
+  std::optional<AdaptiveTokenMask> GetCache(
+      const uint64_t& fsm_hash, int32_t fsm_new_node_id, const uint64_t& tokenizer_hash
+  );
+  bool AddCache(
+      const uint64_t& fsm_hash,
+      int32_t fsm_new_node_id,
+      const uint64_t& tokenizer_hash,
+      const AdaptiveTokenMask& token_mask
+  );
+  bool AddCache(
+      const uint64_t& fsm_hash,
+      int32_t fsm_new_node_id,
+      const uint64_t& tokenizer_hash,
+      AdaptiveTokenMask&& token_mask
+  );
+  CrossingCacheManagerImpl(size_t max_cache_size = 10000) : max_cache_size_(max_cache_size) {}
+
+  void ClearCache();
+
+ private:
+  std::mutex mutex_;
+  const size_t max_cache_size_;
+  std::list<std::pair<std::tuple<uint64_t, int32_t, uint64_t>, AdaptiveTokenMask>> cache_list_;
+  std::unordered_map<std::tuple<uint64_t, int32_t, uint64_t>, decltype(cache_list_.begin())> cache_;
+};
+
+std::optional<AdaptiveTokenMask> CrossingCacheManager::CrossingCacheManagerImpl::GetCache(
+    const uint64_t& fsm_hash, int32_t fsm_new_node_id, const uint64_t& tokenizer_hash
+) {
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  if (cache_.find(std::make_tuple(fsm_hash, fsm_new_node_id, tokenizer_hash)) == cache_.end()) {
+    // The cache is not hit.
+    return std::nullopt;
+  }
+  // Perform LRU.
+  auto list_iterator = cache_[std::make_tuple(fsm_hash, fsm_new_node_id, tokenizer_hash)];
+  cache_list_.splice(cache_list_.begin(), cache_list_, list_iterator);
+
+  // Return the cached token mask.
+  return cache_list_.front().second;
+}
+
+bool CrossingCacheManager::CrossingCacheManagerImpl::AddCache(
+    const uint64_t& fsm_hash,
+    int32_t fsm_new_node_id,
+    const uint64_t& tokenizer_hash,
+    const AdaptiveTokenMask& token_mask
+) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (cache_.find(std::make_tuple(fsm_hash, fsm_new_node_id, tokenizer_hash)) != cache_.end()) {
+    // The cache already exists.
+    return false;
+  }
+  // Add the new cache.
+  cache_list_.emplace_front(
+      std::make_pair(std::make_tuple(fsm_hash, fsm_new_node_id, tokenizer_hash), token_mask)
+  );
+  cache_[std::make_tuple(fsm_hash, fsm_new_node_id, tokenizer_hash)] = cache_list_.begin();
+
+  // If the cache exceeds the maximum size, evict the least recently used item.
+  if (cache_.size() > max_cache_size_) {
+    auto last_cache_list_iterator = cache_list_.end();
+    last_cache_list_iterator--;
+    cache_.erase(last_cache_list_iterator->first);
+    cache_list_.pop_back();
+  }
+  return true;
+}
+
+bool CrossingCacheManager::CrossingCacheManagerImpl::AddCache(
+    const uint64_t& fsm_hash,
+    int32_t fsm_new_node_id,
+    const uint64_t& tokenizer_hash,
+    AdaptiveTokenMask&& token_mask
+) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (cache_.find(std::make_tuple(fsm_hash, fsm_new_node_id, tokenizer_hash)) != cache_.end()) {
+    // The cache already exists.
+    return false;
+  }
+  // Add the new cache.
+  cache_list_.emplace_front(std::make_pair(
+      std::make_tuple(fsm_hash, fsm_new_node_id, tokenizer_hash), std::move(token_mask)
+  ));
+  cache_[std::make_tuple(fsm_hash, fsm_new_node_id, tokenizer_hash)] = cache_list_.begin();
+
+  // If the cache exceeds the maximum size, evict the least recently used item.
+  if (cache_.size() > max_cache_size_) {
+    auto last_cache_list_iterator = cache_list_.end();
+    last_cache_list_iterator--;
+    cache_.erase(last_cache_list_iterator->first);
+    cache_list_.pop_back();
+  }
+  return true;
+}
+
+void CrossingCacheManager::CrossingCacheManagerImpl::ClearCache() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  cache_.clear();
+  cache_list_.clear();
+}
+
 /*************************** Forward grammar constructors to their impl ***************************/
 
 Grammar GrammarUnionFunctor::Apply(const std::vector<Grammar>& grammars) {
