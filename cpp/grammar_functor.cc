@@ -20,7 +20,6 @@
 #include "grammar_impl.h"
 #include "support/encoding.h"
 #include "support/logging.h"
-#include "support/memory_size.h"
 #include "xgrammar/grammar.h"
 
 namespace xgrammar {
@@ -2156,7 +2155,38 @@ void CrossingCacheManager::CrossingCacheManagerImpl::ClearCache() {
   std::lock_guard<std::mutex> lock(mutex_);
   cache_.clear();
   cache_list_.clear();
+  current_cache_memory_size_ = 0;
 }
+
+std::optional<AdaptiveTokenMask> CrossingCacheManager::GetCache(
+    const uint64_t& fsm_hash, int32_t fsm_new_node_id, const uint64_t& tokenizer_hash
+) {
+  return crossing_cache_manager_impl_.GetCache(fsm_hash, fsm_new_node_id, tokenizer_hash);
+}
+
+bool CrossingCacheManager::AddCache(
+    const uint64_t& fsm_hash,
+    int32_t fsm_new_node_id,
+    const uint64_t& tokenizer_hash,
+    const AdaptiveTokenMask& token_mask
+) {
+  return crossing_cache_manager_impl_.AddCache(
+      fsm_hash, fsm_new_node_id, tokenizer_hash, token_mask
+  );
+}
+
+bool CrossingCacheManager::AddCache(
+    const uint64_t& fsm_hash,
+    int32_t fsm_new_node_id,
+    const uint64_t& tokenizer_hash,
+    AdaptiveTokenMask&& token_mask
+) {
+  return crossing_cache_manager_impl_.AddCache(
+      fsm_hash, fsm_new_node_id, tokenizer_hash, std::move(token_mask)
+  );
+}
+
+void CrossingCacheManager::ClearCache() { crossing_cache_manager_impl_.ClearCache(); }
 
 /*************************** Forward grammar constructors to their impl ***************************/
 

@@ -17,7 +17,6 @@
 #include "compiled_grammar_impl.h"
 #include "grammar_builder.h"
 #include "grammar_impl.h"
-#include "support/memory_size.h"
 #include "xgrammar/grammar.h"
 
 namespace xgrammar {
@@ -417,7 +416,7 @@ class CrossingCacheManager {
   CrossingCacheManager(size_t max_cache_memory_size = 1e7)
       : crossing_cache_manager_impl_(max_cache_memory_size) {}
 
-  void ClearCache() { crossing_cache_manager_impl_.ClearCache(); }
+  void ClearCache();
 
   size_t GetMaxSize() const { return crossing_cache_manager_impl_.GetMaxSize(); }
 
