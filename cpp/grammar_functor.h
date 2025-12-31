@@ -415,11 +415,11 @@ class CrossingCacheManager {
       AdaptiveTokenMask&& token_mask
   );
   CrossingCacheManager(size_t max_cache_memory_size = 1e7)
-      : crossing_cache_manager_impl_(max_cache_memory_size) {
-    XGRAMMAR_CHECK(max_cache_memory_size != 0);
-  }
+      : crossing_cache_manager_impl_(max_cache_memory_size) {}
 
   void ClearCache() { crossing_cache_manager_impl_.ClearCache(); }
+
+  size_t GetMaxSize() const { return crossing_cache_manager_impl_.GetMaxSize(); }
 
   friend size_t MemorySize(const CrossingCacheManager& manager) {
     return MemorySize(manager.crossing_cache_manager_impl_);
@@ -447,6 +447,8 @@ class CrossingCacheManager {
         : max_cache_memory_size_(max_cache_memory_size) {}
 
     void ClearCache();
+
+    size_t GetMaxSize() const { return max_cache_memory_size_; }
 
     friend size_t MemorySize(const CrossingCacheManagerImpl& manager) {
       return manager.current_cache_memory_size_;

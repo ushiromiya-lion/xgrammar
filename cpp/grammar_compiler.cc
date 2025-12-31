@@ -779,8 +779,14 @@ AdaptiveTokenMask GrammarMatcherForTokenMaskCache::GetAdaptiveTokenMask(bool is_
  */
 class GrammarCompilerNoCache {
  public:
-  GrammarCompilerNoCache(const TokenizerInfo& tokenizer_info, int max_threads)
-      : tokenizer_info_(tokenizer_info), max_threads_(max_threads) {}
+  GrammarCompilerNoCache(
+      const TokenizerInfo& tokenizer_info,
+      int max_threads,
+      CrossingCacheManager& crossing_cache_manager
+  )
+      : tokenizer_info_(tokenizer_info),
+        max_threads_(max_threads),
+        crossing_cache_manager_(crossing_cache_manager) {}
 
   CompiledGrammar CompileBuiltinJSONGrammar();
 
@@ -818,6 +824,9 @@ class GrammarCompilerNoCache {
   const TokenizerInfo tokenizer_info_;
   /*! \brief The maximum number of threads to use. */
   const int max_threads_;
+
+  /*! \brief The manager of the crossing grammar cache.*/
+  CrossingCacheManager& crossing_cache_manager_;
 };
 
 CompiledGrammar GrammarCompilerNoCache::MultiThreadCompileGrammar(Grammar grammar_unoptimized) {
@@ -832,6 +841,11 @@ CompiledGrammar GrammarCompilerNoCache::MultiThreadCompileGrammar(Grammar gramma
   }
   std::unordered_map<int32_t, DynamicBitset> tag_dispatch_rule_id_to_second_slicing_bitset;
   TagDispatchOptimization(compiled_grammar_impl, &tag_dispatch_rule_id_to_second_slicing_bitset);
+
+  // If the compiler is cache-enabled, then we hash the grammars for crossing-grammar caching.
+  if (crossing_cache_manager_.GetMaxSize() != 0) {
+    GrammarFSMHasher().Apply(&compiled_grammar_impl->grammar);
+  }
   // Step 3. Compute the adaptive token mask cache
   // The token mask cache is computed for these positions in the grammar:
   // 1. All character class or character class star (with last_utf8_bytes=0, 1, 2, 3)
@@ -1125,7 +1139,7 @@ class GrammarCompiler::Impl {
       bool cache_enabled,
       int64_t max_memory_bytes
   )
-      : no_cache_compiler_(tokenizer_info, max_threads),
+      : no_cache_compiler_(tokenizer_info, max_threads, crossing_cache_manager_),
         cache_enabled_(cache_enabled),
         compile_cache_(static_cast<std::size_t>(max_memory_bytes / 3 * 2), Computer(*this)),
         crossing_cache_manager_(static_cast<std::size_t>(max_memory_bytes / 3)) {

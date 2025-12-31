@@ -2188,6 +2188,8 @@ void GrammarFSMBuilder::Apply(Grammar* grammar) { GrammarFSMBuilderImpl().Apply(
 
 void RepetitionNormalizer::Apply(Grammar* grammar) { RepetitionNormalizerImpl().Apply(grammar); }
 
+void GrammarFSMHasher::Apply(Grammar* grammar) { GrammarFSMHasherImpl().Apply(grammar); }
+
 FSMWithStartEnd GrammarFSMBuilder::RuleRef(const GrammarExpr& expr) {
   return GrammarFSMBuilderImpl::RuleRef(expr);
 }
