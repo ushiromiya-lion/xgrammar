@@ -887,7 +887,12 @@ std::optional<FSMWithStartEnd> TrieFSMBuilderImpl::Build(
     is_end_state[end] = true;
   }
 
-  return FSMWithStartEnd(fsm, start, is_end_state);
+  // The trie-based automaton is usually deterministic (single outgoing transition per byte and no
+  // epsilons). Compute and mark DFA status so downstream algorithms can skip redundant
+  // determinization when safe.
+  FSMWithStartEnd fsm_with_mark(fsm, start, is_end_state);
+  bool is_dfa = fsm_with_mark.IsDFA();
+  return FSMWithStartEnd(fsm, start, is_end_state, is_dfa);
 }
 
 void TrieFSMBuilderImpl::AddBackEdges(FSM* fsm, int start, const std::unordered_set<int>& ends) {

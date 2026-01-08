@@ -414,3 +414,51 @@ TEST(XGrammarFSMBuilderTest, TestChoicesFSMBuilder) {
   EXPECT_TRUE(fsm_rule2_result.has_value());
   EXPECT_EQ(fsm_rule2_result->ToString(), expected_fsm_rule2);
 }
+
+TEST(XGrammarFSMBuilderTest, RegexIntersectionWithExcludesRemainsCorrect) {
+  auto regex_fsm_result = RegexFSMBuilder::Build("ab*");
+  ASSERT_TRUE(regex_fsm_result.IsOk());
+  auto regex_fsm = std::move(regex_fsm_result).Unwrap();
+
+  auto exclude_fsm_result =
+      TrieFSMBuilder::Build(/*patterns=*/{}, /*excluded_patterns=*/{"bb"}, nullptr, true, true);
+  ASSERT_TRUE(exclude_fsm_result.has_value());
+  auto exclude_fsm = std::move(exclude_fsm_result).value();
+
+  // Mirror the StructuralTagGrammarConverter behavior: treat all non-dead states as accepting so
+  // the automaton acts as an exclusion filter (accept anything that does NOT hit a dead state).
+  FSM& exclude_fsm_raw = exclude_fsm.GetFsm();
+  std::unordered_set<int> dead_states;
+  for (int state = 0; state < exclude_fsm_raw.NumStates(); ++state) {
+    if (exclude_fsm_raw.GetEdges(state).empty()) {
+      dead_states.insert(state);
+    }
+  }
+  std::vector<bool> new_is_end(exclude_fsm_raw.NumStates(), true);
+  for (int state : dead_states) {
+    new_is_end[state] = false;
+  }
+  exclude_fsm = FSMWithStartEnd(
+      exclude_fsm_raw, exclude_fsm.GetStart(), new_is_end, /*is_dfa=*/exclude_fsm.IsDFA()
+  );
+
+  auto intersect_result = FSMWithStartEnd::Intersect(regex_fsm, exclude_fsm);
+  ASSERT_TRUE(intersect_result.IsOk());
+  auto intersect_fsm = std::move(intersect_result).Unwrap();
+
+  auto expect_allowed = [&](const std::string& s) {
+    ASSERT_TRUE(regex_fsm.AcceptString(s)) << "regex baseline should accept " << s;
+    ASSERT_TRUE(exclude_fsm.AcceptString(s)) << "exclude filter should allow " << s;
+    EXPECT_TRUE(intersect_fsm.AcceptString(s)) << "intersection should allow " << s;
+  };
+  auto expect_blocked = [&](const std::string& s) {
+    ASSERT_TRUE(regex_fsm.AcceptString(s)) << "regex baseline should accept " << s;
+    ASSERT_FALSE(exclude_fsm.AcceptString(s)) << "exclude filter should block " << s;
+    EXPECT_FALSE(intersect_fsm.AcceptString(s)) << "intersection should block " << s;
+  };
+
+  expect_allowed("a");
+  expect_allowed("ab");
+  expect_blocked("abb");    // excluded substring "bb"
+  expect_blocked("abbbb");  // excluded substring "bb"
+}

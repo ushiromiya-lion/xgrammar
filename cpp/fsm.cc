@@ -935,12 +935,19 @@ Result<FSMWithStartEnd> FSMWithStartEnd::Intersect(
   if (!lhs.IsLeaf() || !rhs.IsLeaf()) {
     return ResultErr("Intersect only support leaf fsm!");
   }
-  auto lhs_dfa_raw = lhs.ToDFA();
-  auto rhs_dfa_raw = rhs.ToDFA();
+  auto to_dfa_if_needed = [&](const FSMWithStartEnd& fsm) -> Result<FSMWithStartEnd> {
+    if (fsm.is_dfa_) {
+      // Already deterministic; make a copy to avoid mutating the original.
+      return ResultOk(fsm.Copy());
+    }
+    return fsm.ToDFA();
+  };
 
+  auto lhs_dfa_raw = to_dfa_if_needed(lhs);
   if (lhs_dfa_raw.IsErr()) {
     return lhs_dfa_raw;
   }
+  auto rhs_dfa_raw = to_dfa_if_needed(rhs);
   if (rhs_dfa_raw.IsErr()) {
     return rhs_dfa_raw;
   }
