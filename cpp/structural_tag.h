@@ -108,6 +108,7 @@ struct SequenceFormat {
   bool is_unlimited_ = false;
   friend class StructuralTagAnalyzer;
   friend class StructuralTagGrammarConverter;
+  friend class FormatFingerprinter;
 };
 
 struct OrFormat {
@@ -120,6 +121,7 @@ struct OrFormat {
   bool is_unlimited_ = false;
   friend class StructuralTagAnalyzer;
   friend class StructuralTagGrammarConverter;
+  friend class FormatFingerprinter;
 };
 
 struct TagFormat {
@@ -158,6 +160,7 @@ struct TriggeredTagsFormat {
   std::vector<std::string> detected_end_strs_;
   friend class StructuralTagAnalyzer;
   friend class StructuralTagGrammarConverter;
+  friend class FormatFingerprinter;
 };
 
 struct TagsWithSeparatorFormat {
@@ -180,6 +183,7 @@ struct TagsWithSeparatorFormat {
   std::vector<std::string> detected_end_strs_;
   friend class StructuralTagAnalyzer;
   friend class StructuralTagGrammarConverter;
+  friend class FormatFingerprinter;
 };
 
 /******************** Top Level ********************/

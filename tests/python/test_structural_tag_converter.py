@@ -2506,5 +2506,42 @@ def test_regex_excludes_empty_string_error():
     assert "non-empty" in str(exc_info.value).lower() or "empty" in str(exc_info.value).lower()
 
 
+def test_structural_tag_fingerprint_deduplicates_identical_formats():
+    structural_tag = {
+        "type": "structural_tag",
+        "format": {
+            "type": "sequence",
+            "elements": [
+                {"type": "const_string", "value": "A"},
+                {"type": "const_string", "value": "A"},
+            ],
+        },
+    }
+    grammar = xgr.Grammar.from_structural_tag(structural_tag)
+    grammar_str = str(grammar)
+
+    # Identical formats should reuse the same rule id.
+    assert "const_string_1 ::=" not in grammar_str
+    assert grammar_str.count("const_string ::=") == 1
+
+
+def test_structural_tag_fingerprint_changes_on_field_diff():
+    structural_tag = {
+        "type": "structural_tag",
+        "format": {
+            "type": "sequence",
+            "elements": [
+                {"type": "const_string", "value": "A"},
+                {"type": "const_string", "value": "B"},
+            ],
+        },
+    }
+    grammar = xgr.Grammar.from_structural_tag(structural_tag)
+    grammar_str = str(grammar)
+
+    # Different values produce distinct rules.
+    assert "const_string_1 ::=" in grammar_str
+
+
 if __name__ == "__main__":
     pytest.main(sys.argv)
