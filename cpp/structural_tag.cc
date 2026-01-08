@@ -785,6 +785,7 @@ class FormatFingerprinter {
   picojson::value VisitSub(const TagsWithSeparatorFormat& format);
 
   picojson::value ParseJSONOrString(const std::string& json_str);
+  std::string RegexCanonical(const std::string& pattern);
 
   bool include_internal_fields_;
 };
@@ -803,6 +804,20 @@ picojson::value FormatFingerprinter::ParseJSONOrString(const std::string& json_s
     return picojson::value(json_str);
   }
   return value;
+}
+
+std::string FormatFingerprinter::RegexCanonical(const std::string& pattern) {
+  // Build a DFA and serialize it to achieve semantic normalization; fall back to raw pattern if
+  // the build fails to keep behavior unchanged.
+  auto fsm_result = RegexFSMBuilder::Build(pattern);
+  if (fsm_result.IsErr()) {
+    return pattern;
+  }
+  auto dfa_result = std::move(fsm_result).Unwrap().ToDFA();
+  if (dfa_result.IsErr()) {
+    return pattern;
+  }
+  return std::move(dfa_result).Unwrap().ToString();
 }
 
 picojson::value FormatFingerprinter::Visit(const Format& format) {
@@ -860,7 +875,7 @@ picojson::value FormatFingerprinter::VisitSub(const GrammarFormat& format) {
 picojson::value FormatFingerprinter::VisitSub(const RegexFormat& format) {
   picojson::object obj;
   obj["type"] = picojson::value(RegexFormat::type);
-  obj["pattern"] = picojson::value(format.pattern);
+  obj["pattern"] = picojson::value(RegexCanonical(format.pattern));
   picojson::array excludes;
   excludes.reserve(format.excluded_strs.size());
   for (const auto& s : format.excluded_strs) {
@@ -984,6 +999,10 @@ picojson::value FormatFingerprinter::VisitSub(const TagsWithSeparatorFormat& for
   return picojson::value(obj);
 }
 
+std::string _DebugComputeFormatFingerprint(const Format& format) {
+  return FormatFingerprinter::Compute(format);
+}
+
 /************** StructuralTag to Grammar Converter **************/
 
 class StructuralTagGrammarConverter {
@@ -1016,10 +1035,10 @@ class StructuralTagGrammarConverter {
   GrammarBuilder grammar_builder_;
 
   /*!
-   * \brief Cache from format fingerprint to rule id.
-   * This enables deduplication of identical formats to reduce grammar size.
+   * \brief Cache from format fingerprint hash to rule ids + canonical strings to deduplicate
+   * identical formats while avoiding large string keys.
    */
-  std::unordered_map<std::string, int> fingerprint_to_rule_id_;
+  std::unordered_map<uint64_t, std::vector<std::pair<std::string, int>>> fingerprint_cache_;
 };
 
 bool StructuralTagGrammarConverter::IsPrefix(
@@ -1027,6 +1046,17 @@ bool StructuralTagGrammarConverter::IsPrefix(
 ) {
   return prefix.size() <= full_str.size() &&
          std::string_view(full_str).substr(0, prefix.size()) == prefix;
+}
+
+static uint64_t FnvaHash(const std::string& s) {
+  constexpr uint64_t kPrime = 1099511628211ull;
+  constexpr uint64_t kOffset = 14695981039346656037ull;
+  uint64_t hash = kOffset;
+  for (unsigned char c : s) {
+    hash ^= static_cast<uint64_t>(c);
+    hash *= kPrime;
+  }
+  return hash;
 }
 
 Result<Grammar, ISTError> StructuralTagGrammarConverter::Convert(const StructuralTag& structural_tag
@@ -1052,18 +1082,23 @@ Grammar StructuralTagGrammarConverter::AddRootRuleAndGetGrammar(int ref_rule_id)
 Result<int, ISTError> StructuralTagGrammarConverter::Visit(const Format& format) {
   // Compute fingerprint for deduplication
   std::string fingerprint = FormatFingerprinter::Compute(format);
+  uint64_t hash = FnvaHash(fingerprint);
 
   // Check if we've already processed an identical format
-  auto it = fingerprint_to_rule_id_.find(fingerprint);
-  if (it != fingerprint_to_rule_id_.end()) {
-    return ResultOk(it->second);
+  auto bucket_it = fingerprint_cache_.find(hash);
+  if (bucket_it != fingerprint_cache_.end()) {
+    for (const auto& entry : bucket_it->second) {
+      if (entry.first == fingerprint) {
+        return ResultOk(entry.second);
+      }
+    }
   }
 
   // Process the format and cache the result
   auto result = std::visit([&](auto&& arg) -> Result<int, ISTError> { return VisitSub(arg); }, format);
   if (result.IsOk()) {
     int rule_id = std::move(result).Unwrap();
-    fingerprint_to_rule_id_[fingerprint] = rule_id;
+    fingerprint_cache_[hash].push_back({std::move(fingerprint), rule_id});
     return ResultOk(rule_id);
   }
   return result;

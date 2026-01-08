@@ -204,6 +204,9 @@ struct StructuralTag {
  */
 Result<Grammar, StructuralTagError> StructuralTagToGrammar(const std::string& structural_tag_json);
 
+// Internal/testing helpers
+std::string _DebugComputeFormatFingerprint(const Format& format);
+
 }  // namespace xgrammar
 
 #endif  // XGRAMMAR_STRUCTURAL_TAG_H_
