@@ -2562,5 +2562,122 @@ root ::= ((sequence))
     check_stag_with_instance(stag, instance, is_accepted)
 
 
+# ---------- Regex Excludes Tests ----------
+
+# Note: Regex excludes work using substring matching semantics.
+# Strings containing any excluded substring are rejected.
+
+test_strings_is_accepted_regex_excludes = [
+    # Basic matching - these match the pattern and don't contain excluded substring
+    ("abc", True),
+    ("aac", True),
+    ("abbc", True),
+    ("ab", True),
+    ("cab", True),
+    # Contains excluded substring "bac"
+    ("bac", False),
+    ("abac", False),  # Contains "bac"
+    ("bacb", False),  # Contains "bac"
+    # Not matching the pattern at all
+    ("xyz", False),  # Doesn't match [a-c]+
+    ("123", False),  # Doesn't match [a-c]+
+]
+
+
+@pytest.mark.parametrize("instance, is_accepted", test_strings_is_accepted_regex_excludes)
+def test_regex_with_excludes_basic(instance: str, is_accepted: bool):
+    """Test regex format with simple excludes (substring matching semantics)"""
+    stag_format = {
+        "type": "regex",
+        "pattern": "[a-c]+",
+        "excludes": ["bac"],  # Excludes strings containing "bac"
+    }
+
+    check_stag_with_instance(stag_format, instance, is_accepted)
+
+
+test_strings_is_accepted_regex_excludes_substring = [
+    # Should match - don't contain excluded substrings
+    ("hello", True),
+    ("world", True),
+    ("test", True),
+    ("baz", True),  # Doesn't contain "foo" or "bar"
+    # Contains excluded patterns - rejected (substring matching)
+    ("foo", False),  # Contains 'foo'
+    ("bar", False),  # Contains 'bar'
+    ("foobar", False),  # Contains both 'foo' and 'bar'
+    ("testfoo", False),  # Contains 'foo'
+    ("bartest", False),  # Contains 'bar'
+]
+
+
+@pytest.mark.parametrize("instance, is_accepted", test_strings_is_accepted_regex_excludes_substring)
+def test_regex_with_excludes_substring(instance: str, is_accepted: bool):
+    """Test regex format excludes use substring matching semantics"""
+    stag_format = {
+        "type": "regex",
+        "pattern": "[a-z]+",
+        "excludes": ["foo", "bar"],
+    }
+
+    check_stag_with_instance(stag_format, instance, is_accepted)
+
+
+test_strings_is_accepted_regex_excludes_single = [
+    # Contains "bad" - excluded
+    ("bad", False),
+    ("badword", False),  # Contains "bad"
+    ("wordbad", False),  # Contains "bad"
+    ("verybadword", False),  # Contains "bad"
+    # Other valid strings - not excluded
+    ("good", True),
+    ("bade", False),  # Contains "bad"
+    ("badge", False),  # Contains "bad"
+]
+
+
+@pytest.mark.parametrize("instance, is_accepted", test_strings_is_accepted_regex_excludes_single)
+def test_regex_with_excludes_single(instance: str, is_accepted: bool):
+    """Test regex excludes with a single excluded string (substring matching)"""
+    stag_format = {
+        "type": "regex",
+        "pattern": "[a-z]+",
+        "excludes": ["bad"],
+    }
+
+    check_stag_with_instance(stag_format, instance, is_accepted)
+
+
+def test_regex_excludes_empty_list():
+    """Test that regex with empty excludes list works normally"""
+    stag_format = {"type": "regex", "pattern": "[a-z]+", "excludes": []}
+
+    # Should work like normal regex
+    check_stag_with_instance(stag_format, "hello", True)
+    check_stag_with_instance(stag_format, "123", False)
+
+
+def test_regex_excludes_parsing_error():
+    """Test that invalid excludes field raises an error"""
+    stag_format = {
+        "type": "structural_tag",
+        "format": {"type": "regex", "pattern": "[a-z]+", "excludes": "not_an_array"},
+    }
+    with pytest.raises(Exception) as exc_info:
+        xgr.Grammar.from_structural_tag(stag_format)
+    assert "array" in str(exc_info.value).lower()
+
+
+def test_regex_excludes_empty_string_error():
+    """Test that empty string in excludes raises an error"""
+    stag_format = {
+        "type": "structural_tag",
+        "format": {"type": "regex", "pattern": "[a-z]+", "excludes": ["valid", ""]},
+    }
+    with pytest.raises(Exception) as exc_info:
+        xgr.Grammar.from_structural_tag(stag_format)
+    assert "non-empty" in str(exc_info.value).lower() or "empty" in str(exc_info.value).lower()
+
+
 if __name__ == "__main__":
     pytest.main(sys.argv)

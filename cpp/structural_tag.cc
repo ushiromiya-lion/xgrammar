@@ -8,13 +8,19 @@
 #include <xgrammar/exception.h>
 
 #include <optional>
+#include <algorithm>
 #include <string>
 #include <string_view>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
+#include "fsm.h"
+#include "fsm_builder.h"
 #include "grammar_functor.h"
 #include "grammar_impl.h"
 #include "json_schema_converter.h"
+#include "regex_converter.h"
 #include "support/logging.h"
 #include "support/recursion_guard.h"
 #include "support/utils.h"
@@ -254,7 +260,23 @@ Result<RegexFormat, ISTError> StructuralTagParser::ParseRegexFormat(const picojs
       pattern_it->second.get<std::string>().empty()) {
     return ResultErr<ISTError>("Regex format must have a pattern field with a non-empty string");
   }
-  return ResultOk<RegexFormat>(pattern_it->second.get<std::string>());
+  // excludes is optional.
+  std::vector<std::string> excluded_strs;
+  auto excluded_strs_it = obj.find("excludes");
+  if (excluded_strs_it != obj.end()) {
+    if (!excluded_strs_it->second.is<picojson::array>()) {
+      return ResultErr<ISTError>("Regex format's excludes field must be an array");
+    }
+    const auto& excluded_strs_array = excluded_strs_it->second.get<picojson::array>();
+    excluded_strs.reserve(excluded_strs_array.size());
+    for (const auto& excluded_str : excluded_strs_array) {
+      if (!excluded_str.is<std::string>() || excluded_str.get<std::string>().empty()) {
+        return ResultErr<ISTError>("Regex format's excludes array must contain non-empty strings");
+      }
+      excluded_strs.push_back(excluded_str.get<std::string>());
+    }
+  }
+  return ResultOk<RegexFormat>(pattern_it->second.get<std::string>(), std::move(excluded_strs));
 }
 
 Result<SequenceFormat, ISTError> StructuralTagParser::ParseSequenceFormat(
@@ -823,9 +845,185 @@ Result<int, ISTError> StructuralTagGrammarConverter::VisitSub(const GrammarForma
 }
 
 Result<int, ISTError> StructuralTagGrammarConverter::VisitSub(const RegexFormat& format) {
-  auto sub_grammar = Grammar::FromRegex(format.pattern);
-  auto added_root_rule_id = SubGrammarAdder().Apply(&grammar_builder_, sub_grammar);
-  return ResultOk(added_root_rule_id);
+  // If no excludes, use the simple path
+  if (format.excluded_strs.empty()) {
+    auto sub_grammar = Grammar::FromRegex(format.pattern);
+    auto added_root_rule_id = SubGrammarAdder().Apply(&grammar_builder_, sub_grammar);
+    return ResultOk(added_root_rule_id);
+  }
+
+  // Build FSM from the regex pattern
+  auto regex_fsm_result = RegexFSMBuilder::Build(format.pattern);
+  if (regex_fsm_result.IsErr()) {
+    return ResultErr<ISTError>(
+        std::string("Failed to build FSM from regex pattern: ") +
+        std::move(regex_fsm_result).UnwrapErr().what()
+    );
+  }
+  auto regex_fsm = std::move(regex_fsm_result).Unwrap();
+
+  // Shrink the regex automaton to reduce cross-product size.
+  regex_fsm = regex_fsm.SimplifyEpsilon();
+  regex_fsm = regex_fsm.MergeEquivalentSuccessors();
+
+  // Use TrieFSMBuilder to build an Aho-Corasick FSM for excludes.
+  // We pass empty patterns list, and excluded patterns will be built as "dead" states.
+  // add_back_edges=true enables proper Aho-Corasick back edges.
+  std::vector<int32_t> end_states;
+  auto trie_result = TrieFSMBuilder::Build(
+      {},                       // No trigger patterns
+      format.excluded_strs,     // Excluded patterns
+      &end_states,              // End states (will be empty since no patterns)
+      true,                     // allow_overlap
+      true                      // add_back_edges - creates Aho-Corasick automaton
+  );
+
+  if (!trie_result.has_value()) {
+    return ResultErr<ISTError>("Failed to build exclusion FSM from excluded patterns");
+  }
+  auto exclude_filter = std::move(trie_result).value();
+
+  // The trie FSM marks only pattern end states as accepting, but we need ALL non-dead states
+  // to be accepting (to accept any string that doesn't contain excluded patterns).
+  // We need to rebuild the accepting states.
+  FSM& exclude_fsm = exclude_filter.GetFsm();
+  int num_exclude_states = exclude_fsm.NumStates();
+
+  // Find dead states (excluded pattern end states) - states with no outgoing edges after
+  // edge pruning are dead states
+  std::unordered_set<int> dead_states;
+  for (int state = 0; state < num_exclude_states; ++state) {
+    const auto& edges = exclude_fsm.GetEdges(state);
+    if (edges.empty()) {
+      dead_states.insert(state);
+    }
+  }
+
+  // Mark all non-dead states as accepting
+  std::vector<bool> new_is_end(num_exclude_states, false);
+  for (int state = 0; state < num_exclude_states; ++state) {
+    if (dead_states.count(state) == 0) {
+      new_is_end[state] = true;
+    }
+  }
+  exclude_filter = FSMWithStartEnd(exclude_fsm, exclude_filter.GetStart(), new_is_end, true);
+
+  // Intersect regex FSM with exclusion filter
+  auto result_fsm_result = FSMWithStartEnd::Intersect(regex_fsm, exclude_filter);
+  if (result_fsm_result.IsErr()) {
+    return ResultErr<ISTError>(
+        std::string("Failed to compute intersection for regex with excludes: ") +
+        std::move(result_fsm_result).UnwrapErr().what()
+    );
+  }
+  auto result_fsm = std::move(result_fsm_result).Unwrap();
+
+  // The intersection is a DFA; merge equivalent successors to reduce rule count before lowering.
+  result_fsm = result_fsm.MergeEquivalentSuccessors();
+
+  // Merge consecutive edges with the same target in the result FSM
+  FSM& result_fsm_ref = result_fsm.GetFsm();
+  for (int state = 0; state < result_fsm_ref.NumStates(); ++state) {
+    std::vector<FSMEdge>& edges = result_fsm_ref.GetEdges(state);
+    if (edges.size() <= 1) continue;
+
+    // Sort edges by target, then by min
+    std::sort(edges.begin(), edges.end(), [](const FSMEdge& a, const FSMEdge& b) {
+      if (a.target != b.target) return a.target < b.target;
+      return a.min < b.min;
+    });
+
+    // Merge consecutive ranges with the same target
+    std::vector<FSMEdge> merged_edges;
+    FSMEdge current = edges[0];
+
+    for (size_t i = 1; i < edges.size(); ++i) {
+      if (edges[i].target == current.target && edges[i].min <= current.max + 1) {
+        // Extend current range
+        current.max = std::max(current.max, edges[i].max);
+      } else {
+        merged_edges.push_back(current);
+        current = edges[i];
+      }
+    }
+    merged_edges.push_back(current);
+    edges = std::move(merged_edges);
+  }
+
+  // Convert the resulting FSM to a grammar
+  int num_states = result_fsm.NumStates();
+  if (num_states == 0) {
+    return ResultErr<ISTError>("Regex with excludes results in empty language (nothing matches)");
+  }
+
+  // Find reachable states from start using BFS
+  std::vector<bool> reachable(num_states, false);
+  std::vector<int> queue;
+  queue.push_back(result_fsm.GetStart());
+  reachable[result_fsm.GetStart()] = true;
+
+  for (size_t i = 0; i < queue.size(); ++i) {
+    int state = queue[i];
+    const auto& edges = result_fsm.GetFsm().GetEdges(state);
+    for (const auto& edge : edges) {
+      if (!reachable[edge.target]) {
+        reachable[edge.target] = true;
+        queue.push_back(edge.target);
+      }
+    }
+  }
+
+  // Build choice expressions for each state (only reachable ones)
+  std::vector<int32_t> state_rule_ids(num_states, -1);
+
+  // First pass: create empty rules for reachable states only
+  for (int state = 0; state < num_states; ++state) {
+    if (reachable[state]) {
+      state_rule_ids[state] = grammar_builder_.AddEmptyRuleWithHint("regex_state");
+    }
+  }
+
+  // Second pass: build rule bodies
+  // Optimize by grouping edges by target state to create merged character classes
+  for (int state = 0; state < num_states; ++state) {
+    if (!reachable[state]) continue;
+    std::vector<int32_t> choice_seqs;
+
+    // If this is an end state, add empty string as an option
+    if (result_fsm.IsEndState(state)) {
+      choice_seqs.push_back(grammar_builder_.AddSequence({grammar_builder_.AddEmptyStr()}));
+    }
+
+    // Group edges by target state
+    const auto& edges = result_fsm.GetFsm().GetEdges(state);
+    std::unordered_map<int, std::vector<GrammarBuilder::CharacterClassElement>> target_to_ranges;
+
+    for (const auto& edge : edges) {
+      if (edge.IsCharRange()) {
+        target_to_ranges[edge.target].push_back({edge.min, edge.max});
+      }
+    }
+
+    // Create one choice per target with merged character class
+    for (const auto& [target, ranges] : target_to_ranges) {
+      int32_t char_expr = grammar_builder_.AddCharacterClass(ranges);
+      int32_t target_ref = grammar_builder_.AddRuleRef(state_rule_ids[target]);
+      choice_seqs.push_back(grammar_builder_.AddSequence({char_expr, target_ref}));
+    }
+
+    if (choice_seqs.empty()) {
+      grammar_builder_.UpdateRuleBody(
+          state_rule_ids[state],
+          grammar_builder_.AddChoices({grammar_builder_.AddSequence({grammar_builder_.AddEmptyStr()})
+          })
+      );
+    } else {
+      grammar_builder_.UpdateRuleBody(state_rule_ids[state], grammar_builder_.AddChoices(choice_seqs)
+      );
+    }
+  }
+
+  return ResultOk(state_rule_ids[result_fsm.GetStart()]);
 }
 
 Result<int, ISTError> StructuralTagGrammarConverter::VisitSub(const AnyTextFormat& format) {
